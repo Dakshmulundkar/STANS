@@ -1,0 +1,81 @@
+name: Security Scanning — Trivy
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "**"
+  schedule:
+    # Run every Monday at 08:00 UTC to catch newly disclosed CVEs
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+  security-events: write  # Required to upload SARIF results to GitHub Security tab
+
+jobs:
+  # ── Job 1: Scan the filesystem (source + dependencies) ──────────────────────
+  trivy-fs:
+    name: Trivy Filesystem Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        # SHA-pinned: actions/checkout@v4 (tag: v4.2.2)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Run Trivy filesystem scan
+        # SHA-pinned: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-fs-results.sarif"
+          severity: "CRITICAL,HIGH"
+          # Fail the workflow if any CRITICAL vulnerabilities are found
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Upload Trivy filesystem SARIF to GitHub Security tab
+        # SHA-pinned: github/codeql-action/upload-sarif@v3 (tag: v3.28.19)
+        uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f
+        if: always()
+        with:
+          sarif_file: "trivy-fs-results.sarif"
+          category: "trivy-fs"
+
+  # ── Job 2: Build image then scan it ─────────────────────────────────────────
+  trivy-image:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        # SHA-pinned: actions/checkout@v4 (tag: v4.2.2)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Build Docker image for scanning
+        run: docker build -t stans-scan:${{ github.sha }} .
+
+      - name: Run Trivy image scan
+        # SHA-pinned: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37
+        with:
+          scan-type: "image"
+          image-ref: "stans-scan:${{ github.sha }}"
+          format: "sarif"
+          output: "trivy-image-results.sarif"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Upload Trivy image SARIF to GitHub Security tab
+        # SHA-pinned: github/codeql-action/upload-sarif@v3 (tag: v3.28.19)
+        uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f
+        if: always()
+        with:
+          sarif_file: "trivy-image-results.sarif"
+          category: "trivy-image"

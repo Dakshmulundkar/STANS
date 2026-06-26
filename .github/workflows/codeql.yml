@@ -1,0 +1,55 @@
+name: CodeQL Static Analysis
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Run every Monday at 09:00 UTC
+    - cron: "0 9 * * 1"
+
+permissions:
+  contents: read
+  security-events: write  # Required to upload SARIF results
+  actions: read           # Required for CodeQL to read workflow info
+
+jobs:
+  analyze:
+    name: CodeQL Analyze (JavaScript/TypeScript)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        # SHA-pinned: actions/checkout@v4 (tag: v4.2.2)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Initialize CodeQL
+        # SHA-pinned: github/codeql-action/init@v3 (tag: v3.28.19)
+        uses: github/codeql-action/init@ff0a06e83cb2de871e5a09832bc6a81e7276941f
+        with:
+          languages: javascript-typescript
+          # Use the security-extended query suite for broader coverage
+          queries: security-extended
+
+      - name: Set up Node.js 20
+        # SHA-pinned: actions/setup-node@v4 (tag: v4.4.0)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Build project (helps CodeQL trace compiled output)
+        run: npm run build
+
+      - name: Perform CodeQL Analysis
+        # SHA-pinned: github/codeql-action/analyze@v3 (tag: v3.28.19)
+        uses: github/codeql-action/analyze@ff0a06e83cb2de871e5a09832bc6a81e7276941f
+        with:
+          category: "codeql-javascript"

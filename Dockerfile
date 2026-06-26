@@ -45,6 +45,12 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 RUN chown -R nginx:nginx /usr/share/nginx/html && \
     chmod -R 755 /usr/share/nginx/html
 
+# Nginx needs to write to these paths at runtime.
+# All other parts of the filesystem will be mounted read-only (see compose.yaml).
+# We pre-create these directories so tmpfs mounts work correctly.
+RUN mkdir -p /var/cache/nginx /var/run /tmp && \
+    chown -R nginx:nginx /var/cache/nginx /var/run /tmp
+
 EXPOSE 80
 
 # Health check — polls the /health endpoint every 30s

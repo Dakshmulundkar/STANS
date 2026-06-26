@@ -24,5 +24,34 @@ dist-ssr
 *.sw?
 .env
 
+# ── Secrets & credentials hardening (P2-D) ────────────────────────────────────
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.cert
+*.crt
+*.pub
+id_rsa
+id_ed25519
+id_ecdsa
+*.asc
+secrets/
+credentials/
+.secrets
+.aws/
+.npmrc
+.netrc
+service-account*.json
+*-credentials.json
+*-service-account.json
+google-services.json
+firebase*.json
+
 # Kiro IDE spec files
 .kiro/
+
+# Internal guides
+PERSON_B_GUIDE.md
