@@ -1,10 +1,13 @@
 name: Build and Push to GHCR
 
+# Triggers on pushes to main only.
+# CI validation (ci.yml) runs on all branches including PRs.
 on:
   push:
     branches:
       - main
 
+# Least-privilege permissions: read source, write packages to GHCR
 permissions:
   contents: read
   packages: write
@@ -14,17 +17,25 @@ env:
   IMAGE_NAME: dakshmulundkar/stans-app
 
 jobs:
+  # ── Job 1: Build, test, and push the container image ────────────────────────
   build-and-push:
+    name: Build and Push Image
     runs-on: ubuntu-latest
+    outputs:
+      # Pass the SHA tag to downstream jobs for health check and rollback
+      image-tag: ${{ steps.image-tag.outputs.tag }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        # SHA-pinned: actions/checkout@v4 (tag: v4.2.2)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Node.js 20
+        # SHA-pinned: actions/setup-node@v4 (tag: v4.4.0)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 20
+          node-version: "20"
+          cache: "npm"
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
@@ -33,28 +44,157 @@ jobs:
         run: npm run build
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        # SHA-pinned: docker/login-action@v3 (tag: v3.4.0)
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute image SHA tag
+        id: image-tag
+        run: echo "tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        # SHA-pinned: docker/metadata-action@v5 (tag: v5.7.0)
+        uses: docker/metadata-action@902fa8ec7d6ecbea8a986b4e6aa28ad2e9df5ef3
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
-            type=sha
+            type=sha,prefix=sha-,format=long
+            type=semver,pattern={{version}}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        # SHA-pinned: docker/setup-buildx-action@v3 (tag: v3.10.0)
+        uses: docker/setup-buildx-action@b5730b3b19eaa921b4f88b4ef85b10a80c18f4d0
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        # SHA-pinned: docker/build-push-action@v6 (tag: v6.18.0)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Inject OCI revision and build date labels via build args
+          build-args: |
+            REVISION=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+          # Enable build cache for faster subsequent builds
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Job 2: Verify the pushed image is healthy ────────────────────────────────
+  health-check:
+    name: Post-Deploy Health Check
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    outputs:
+      healthy: ${{ steps.check.outputs.healthy }}
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        # SHA-pinned: docker/login-action@v3 (tag: v3.4.0)
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and run the freshly built image
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image-tag }}"
+          echo "Testing image: $IMAGE"
+          docker pull "$IMAGE"
+          docker run -d --name stans-health-test -p 8080:80 "$IMAGE"
+
+      - name: Wait for container to start
+        run: |
+          echo "Waiting for Nginx to start..."
+          sleep 8
+
+      - name: Check /health endpoint
+        id: check
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          BODY=$(curl -s http://localhost:8080/health)
+          echo "HTTP status: $HTTP_CODE"
+          echo "Response body: $BODY"
+          if [ "$HTTP_CODE" = "200" ] && [ "$BODY" = "healthy" ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            echo "Health check PASSED ✓"
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+            echo "Health check FAILED ✗ — triggering rollback"
+            exit 1
+          fi
+
+      - name: Cleanup test container
+        if: always()
+        run: docker rm -f stans-health-test || true
+
+  # ── Job 3: Rollback if health check fails ───────────────────────────────────
+  rollback:
+    name: Automated Rollback
+    runs-on: ubuntu-latest
+    needs: [build-and-push, health-check]
+    # Only run this job when the health check job fails
+    if: failure() && needs.health-check.result == 'failure'
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        # SHA-pinned: docker/login-action@v3 (tag: v3.4.0)
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Find previous stable image SHA
+        id: prev
+        run: |
+          # List tags from GHCR, find the most recent sha- tag that is NOT the current build
+          CURRENT_SHA="sha-${{ github.sha }}"
+          echo "Current (failed) tag: $CURRENT_SHA"
+
+          # Pull the tag list via the GitHub Packages API
+          PREV_TAG=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/user/packages/container/stans-app/versions" \
+            | jq -r '[.[] | select(.metadata.container.tags[] | startswith("sha-")) | select(.metadata.container.tags[] != "'"$CURRENT_SHA"'")] | first | .metadata.container.tags[] | select(startswith("sha-"))' \
+            2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "WARNING: No previous SHA tag found. Cannot rollback automatically."
+            echo "Manual intervention required."
+            exit 1
+          fi
+
+          echo "Previous stable tag: $PREV_TAG"
+          echo "tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Re-tag previous image as latest
+        run: |
+          REGISTRY="${{ env.REGISTRY }}"
+          IMAGE_NAME="${{ env.IMAGE_NAME }}"
+          PREV_TAG="${{ steps.prev.outputs.tag }}"
+
+          echo "Rolling back: re-tagging $PREV_TAG as latest"
+
+          # Pull the previous stable image
+          docker pull "$REGISTRY/$IMAGE_NAME:$PREV_TAG"
+
+          # Re-tag it as latest
+          docker tag "$REGISTRY/$IMAGE_NAME:$PREV_TAG" "$REGISTRY/$IMAGE_NAME:latest"
+
+          # Push the restored latest tag
+          docker push "$REGISTRY/$IMAGE_NAME:latest"
+
+          echo "Rollback complete. latest → $PREV_TAG"
+
+      - name: Annotate workflow with rollback result
+        run: |
+          echo "::warning title=Rollback Executed::Health check failed for ${{ needs.build-and-push.outputs.image-tag }}. Rolled back latest to ${{ steps.prev.outputs.tag }}."

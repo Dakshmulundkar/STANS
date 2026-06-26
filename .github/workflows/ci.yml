@@ -1,0 +1,59 @@
+name: CI — Build Validation
+
+# Runs on every push and pull request to catch integration issues early.
+# This workflow does NOT push any images — it only validates the build.
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        # SHA-pinned: actions/checkout@v4 (tag: v4.2.2, commit: 11bd71901bbe5b1630ceea73d27597364c9af683)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Node.js 20
+        # SHA-pinned: actions/setup-node@v4 (tag: v4.4.0, commit: 49933ea5288caeca8642d1e84afbd3f7d6820020)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        # npm ci uses package-lock.json for reproducible installs
+        run: npm ci --legacy-peer-deps
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Run lint (if configured)
+        # Only run lint if the lint script exists in package.json.
+        # This avoids hard failures in projects where lint is not yet set up.
+        run: |
+          if node -e "const p = require('./package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1)"; then
+            echo "Lint script found — running eslint"
+            npm run lint
+          else
+            echo "No lint script found in package.json — skipping"
+          fi
+
+      - name: Run tests (if configured)
+        # Only run tests if a test script exists in package.json.
+        run: |
+          if node -e "const p = require('./package.json'); process.exit(p.scripts && p.scripts.test ? 0 : 1)"; then
+            echo "Test script found — running tests"
+            npm run test
+          else
+            echo "No test script found in package.json — skipping"
+          fi

@@ -1,0 +1,31 @@
+version: 2
+
+updates:
+  # ── npm dependencies ────────────────────────────────────────────────────────
+  # Dependabot will open PRs for npm package updates weekly.
+  # This covers both production dependencies and devDependencies.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+
+  # ── GitHub Actions ──────────────────────────────────────────────────────────
+  # Dependabot will open PRs for newer Action versions weekly.
+  # Works in conjunction with SHA-pinned actions — Dependabot will update
+  # both the SHA and the version comment when a new release is available.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"

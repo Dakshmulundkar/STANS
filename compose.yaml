@@ -1,0 +1,22 @@
+# Docker Compose configuration for STANS local development
+# Usage: docker compose up --build
+# Application: http://localhost:8080
+# Health:      http://localhost:8080/health
+
+services:
+  stans:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        REVISION: local
+        BUILD_DATE: "unknown"
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
