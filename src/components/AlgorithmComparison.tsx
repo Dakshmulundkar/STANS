@@ -22,9 +22,9 @@ interface AlgorithmComparisonProps {
 
 const AlgorithmComparison = ({ nodes: propNodes, edges: propEdges }: AlgorithmComparisonProps) => {
   const [hasRun, setHasRun] = useState(false);
-  const [kruskalResult, setKruskalResult] = useState<any>(null);
-  const [primResult, setPrimResult] = useState<any>(null);
-  const [dijkstraResult, setDijkstraResult] = useState<any>(null);
+  const [kruskalResult, setKruskalResult] = useState<Record<string, unknown>>(null);
+  const [primResult, setPrimResult] = useState<Record<string, unknown>>(null);
+  const [dijkstraResult, setDijkstraResult] = useState<Record<string, unknown>>(null);
 
   // Use provided nodes/edges or fallback to sample data
   const defaultNodes: Node[] = [

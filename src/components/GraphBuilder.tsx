@@ -474,7 +474,7 @@ const GraphBuilder = ({ nodes, edges, setNodes, setEdges }: GraphBuilderProps) =
                   </div>
                   <div className="space-y-2" id="traffic-level-slider">
                     <Label htmlFor="traffic">Traffic Level</Label>
-                    <Select value={edgeTraffic} onValueChange={(v: any) => setEdgeTraffic(v)}>
+                    <Select value={edgeTraffic} onValueChange={(v: "low" | "medium" | "high") => setEdgeTraffic(v)}>
                       <SelectTrigger id="traffic">
                         <SelectValue />
                       </SelectTrigger>
@@ -829,7 +829,7 @@ const GraphBuilder = ({ nodes, edges, setNodes, setEdges }: GraphBuilderProps) =
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="editTraffic">Traffic Level</Label>
-                    <Select value={editingEdgeTraffic} onValueChange={(v: any) => setEditingEdgeTraffic(v)}>
+                    <Select value={editingEdgeTraffic} onValueChange={(v: "low" | "medium" | "high") => setEditingEdgeTraffic(v)}>
                       <SelectTrigger id="editTraffic">
                         <SelectValue />
                       </SelectTrigger>
