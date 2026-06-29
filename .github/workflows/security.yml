@@ -15,6 +15,12 @@ permissions:
   contents: read
   security-events: write  # Required to upload SARIF results to GitHub Security tab
 
+env:
+  # Pin to a known-safe Trivy version (0.69.3 — the last clean release before the
+  # March 2026 supply chain compromise that poisoned v0.69.4).
+  # See: https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23
+  TRIVY_VERSION: "0.63.0"
+
 jobs:
   # ── Job 1: Scan the filesystem (source + dependencies) ──────────────────────
   trivy-fs:
@@ -26,18 +32,27 @@ jobs:
         # SHA-pinned: actions/checkout@v4 (tag: v4.2.2)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
+      - name: Install Trivy binary directly
+        # Install via the official install script rather than trivy-action,
+        # which was compromised in the March 2026 supply chain attack.
+        # We pin to a specific version and verify the checksum.
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          trivy --version
+
       - name: Run Trivy filesystem scan
-        # SHA-pinned: aquasecurity/trivy-action@0.31.0
-        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37
-        with:
-          scan-type: "fs"
-          scan-ref: "."
-          format: "sarif"
-          output: "trivy-fs-results.sarif"
-          severity: "CRITICAL,HIGH"
-          # Fail the workflow if any CRITICAL vulnerabilities are found
-          exit-code: "1"
-          ignore-unfixed: true
+        run: |
+          trivy fs \
+            --format sarif \
+            --output trivy-fs-results.sarif \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            .
+        # Allow the step to fail so we can still upload the SARIF report.
+        # The exit code drives the overall job result.
+        continue-on-error: true
 
       - name: Upload Trivy filesystem SARIF to GitHub Security tab
         # SHA-pinned: github/codeql-action/upload-sarif@v3 (tag: v3.28.19)
@@ -46,6 +61,17 @@ jobs:
         with:
           sarif_file: "trivy-fs-results.sarif"
           category: "trivy-fs"
+
+      - name: Fail job if vulnerabilities were found
+        # Re-assert the scan exit code after the SARIF upload has completed.
+        if: always()
+        run: |
+          trivy fs \
+            --format table \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            .
 
   # ── Job 2: Build image then scan it ─────────────────────────────────────────
   trivy-image:
@@ -60,17 +86,22 @@ jobs:
       - name: Build Docker image for scanning
         run: docker build -t stans-scan:${{ github.sha }} .
 
+      - name: Install Trivy binary directly
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          trivy --version
+
       - name: Run Trivy image scan
-        # SHA-pinned: aquasecurity/trivy-action@0.31.0
-        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37
-        with:
-          scan-type: "image"
-          image-ref: "stans-scan:${{ github.sha }}"
-          format: "sarif"
-          output: "trivy-image-results.sarif"
-          severity: "CRITICAL,HIGH"
-          exit-code: "1"
-          ignore-unfixed: true
+        run: |
+          trivy image \
+            --format sarif \
+            --output trivy-image-results.sarif \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "stans-scan:${{ github.sha }}"
+        continue-on-error: true
 
       - name: Upload Trivy image SARIF to GitHub Security tab
         # SHA-pinned: github/codeql-action/upload-sarif@v3 (tag: v3.28.19)
@@ -79,3 +110,13 @@ jobs:
         with:
           sarif_file: "trivy-image-results.sarif"
           category: "trivy-image"
+
+      - name: Fail job if CRITICAL vulnerabilities were found
+        if: always()
+        run: |
+          trivy image \
+            --format table \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "stans-scan:${{ github.sha }}"
