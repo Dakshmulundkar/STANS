@@ -16,8 +16,7 @@ permissions:
   security-events: write  # Required to upload SARIF results to GitHub Security tab
 
 env:
-  # Pin to a known-safe Trivy version (0.69.3 — the last clean release before the
-  # March 2026 supply chain compromise that poisoned v0.69.4).
+  # Pin to a known-safe Trivy version (pre-March-2026 supply chain compromise).
   # See: https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23
   TRIVY_VERSION: "0.63.0"
 
@@ -35,23 +34,24 @@ jobs:
       - name: Install Trivy binary directly
         # Install via the official install script rather than trivy-action,
         # which was compromised in the March 2026 supply chain attack.
-        # We pin to a specific version and verify the checksum.
+        # echo to GITHUB_PATH ensures /usr/local/bin persists across all steps.
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
-          trivy --version
+          echo "/usr/local/bin" >> $GITHUB_PATH
+          /usr/local/bin/trivy --version
 
       - name: Run Trivy filesystem scan
         run: |
-          trivy fs \
+          /usr/local/bin/trivy fs \
             --format sarif \
             --output trivy-fs-results.sarif \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
             .
-        # Allow the step to fail so we can still upload the SARIF report.
-        # The exit code drives the overall job result.
+        # continue-on-error so the SARIF upload step always runs even when
+        # vulnerabilities are found (exit-code 1). The job fails at the end.
         continue-on-error: true
 
       - name: Upload Trivy filesystem SARIF to GitHub Security tab
@@ -62,11 +62,12 @@ jobs:
           sarif_file: "trivy-fs-results.sarif"
           category: "trivy-fs"
 
-      - name: Fail job if vulnerabilities were found
-        # Re-assert the scan exit code after the SARIF upload has completed.
+      - name: Fail job if CRITICAL vulnerabilities were found
+        # Re-run in table format (human-readable) and assert the exit code.
+        # This ensures the job status is red when CRITICALs exist.
         if: always()
         run: |
-          trivy fs \
+          /usr/local/bin/trivy fs \
             --format table \
             --severity CRITICAL \
             --ignore-unfixed \
@@ -90,11 +91,12 @@ jobs:
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
-          trivy --version
+          echo "/usr/local/bin" >> $GITHUB_PATH
+          /usr/local/bin/trivy --version
 
       - name: Run Trivy image scan
         run: |
-          trivy image \
+          /usr/local/bin/trivy image \
             --format sarif \
             --output trivy-image-results.sarif \
             --severity CRITICAL,HIGH \
@@ -114,7 +116,7 @@ jobs:
       - name: Fail job if CRITICAL vulnerabilities were found
         if: always()
         run: |
-          trivy image \
+          /usr/local/bin/trivy image \
             --format table \
             --severity CRITICAL \
             --ignore-unfixed \
