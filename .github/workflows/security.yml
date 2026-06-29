@@ -19,7 +19,6 @@ env:
   # Pin to a known-safe Trivy version (pre-March-2026 supply chain compromise).
   # See: https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23
   TRIVY_VERSION: "0.63.0"
-  TRIVY_BIN: "/usr/local/bin/trivy"
 
 jobs:
   # ── Job 1: Scan the filesystem (source + dependencies) ──────────────────────
@@ -33,21 +32,20 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Trivy binary directly
-        # Install via the official install script rather than trivy-action,
-        # which was compromised in the March 2026 supply chain attack.
-        # set -e aborts immediately on any error so a silent install failure
-        # doesn't cascade into confusing "command not found" errors downstream.
+        # Download install script to a temp file first — avoids curl|sh pipe
+        # propagation issues where a failed curl silently passes empty input to sh.
+        # set -eo pipefail: -e exits on any error, -o pipefail catches pipe failures.
         run: |
-          set -e
+          set -eo pipefail
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+            -o /tmp/trivy-install.sh
+          sh /tmp/trivy-install.sh -b /usr/local/bin "v${TRIVY_VERSION}"
+          /usr/local/bin/trivy --version || (echo "ERROR: Trivy installation failed" && exit 1)
           echo "/usr/local/bin" >> $GITHUB_PATH
-          /usr/local/bin/trivy --version
-          which /usr/local/bin/trivy
 
       - name: Run Trivy filesystem scan
         run: |
-          set -e
+          set -eo pipefail
           /usr/local/bin/trivy fs \
             --format sarif \
             --output trivy-fs-results.sarif \
@@ -55,8 +53,8 @@ jobs:
             --ignore-unfixed \
             --exit-code 1 \
             .
-        # continue-on-error so the SARIF upload step always runs even when
-        # vulnerabilities are found (exit-code 1). The job is failed explicitly below.
+        # continue-on-error: true so the SARIF upload always runs even when
+        # vulnerabilities are found (exit-code 1). Job is failed explicitly below.
         continue-on-error: true
 
       - name: Upload Trivy filesystem SARIF to GitHub Security tab
@@ -68,10 +66,10 @@ jobs:
           category: "trivy-fs"
 
       - name: Fail job if CRITICAL vulnerabilities were found
-        # Re-run in table format (human-readable) and assert the exit code.
+        # Full path used — does not rely on PATH being set from GITHUB_PATH.
         if: always()
         run: |
-          set -e
+          set -eo pipefail
           /usr/local/bin/trivy fs \
             --format table \
             --severity CRITICAL \
@@ -91,19 +89,19 @@ jobs:
 
       - name: Install Trivy binary directly
         run: |
-          set -e
+          set -eo pipefail
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+            -o /tmp/trivy-install.sh
+          sh /tmp/trivy-install.sh -b /usr/local/bin "v${TRIVY_VERSION}"
+          /usr/local/bin/trivy --version || (echo "ERROR: Trivy installation failed" && exit 1)
           echo "/usr/local/bin" >> $GITHUB_PATH
-          /usr/local/bin/trivy --version
-          which /usr/local/bin/trivy
 
       - name: Build Docker image for scanning
         run: docker build -t stans-scan:${{ github.sha }} .
 
       - name: Run Trivy image scan
         run: |
-          set -e
+          set -eo pipefail
           /usr/local/bin/trivy image \
             --format sarif \
             --output trivy-image-results.sarif \
@@ -124,7 +122,7 @@ jobs:
       - name: Fail job if CRITICAL vulnerabilities were found
         if: always()
         run: |
-          set -e
+          set -eo pipefail
           /usr/local/bin/trivy image \
             --format table \
             --severity CRITICAL \
