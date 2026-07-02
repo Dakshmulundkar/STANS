@@ -16,10 +16,10 @@ permissions:
   security-events: write  # Required to upload SARIF results to GitHub Security tab
 
 env:
-  # Pin to a known-safe Trivy version (pre-March-2026 supply chain compromise).
-  # See: https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23
-  # 0.58.2 is the latest stable verified to exist on GitHub Releases.
-  TRIVY_VERSION: "0.58.2"
+  # Pinned to v0.72.0 — latest stable release as of 2026-06-30.
+  # Verified to exist at: https://github.com/aquasecurity/trivy/releases/tag/v0.72.0
+  # Update this value by checking https://github.com/aquasecurity/trivy/releases/latest
+  TRIVY_VERSION: "0.72.0"
 
 jobs:
   # ── Job 1: Scan the filesystem (source + dependencies) ──────────────────────
