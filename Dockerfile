@@ -13,7 +13,9 @@ COPY . .
 RUN npm run build
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM nginx:1.25-alpine3.18
+# nginx:1.30.3-alpine3.20 — stable nginx on Alpine 3.20 (supported, patched libxml2).
+# Replaces nginx:1.25-alpine3.18 which carried CVE-2024-56171 (libxml2) on EOL Alpine 3.18.
+FROM nginx:1.30.3-alpine3.20
 
 # OCI standard image labels — values injected by CI at build time
 ARG REVISION=unknown
@@ -33,8 +35,9 @@ LABEL org.opencontainers.image.title="STANS Navigation System" \
 # auditability and future use with rootless configurations.
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-# Install wget for the HEALTHCHECK (available in alpine, lightweight)
-RUN apk add --no-cache wget
+# Upgrade all packages first to catch any CVEs not yet patched in the base image tag,
+# then install wget for the HEALTHCHECK.
+RUN apk update && apk upgrade --no-cache && apk add --no-cache wget
 
 # Remove default Nginx content and install our built app
 RUN rm -rf /usr/share/nginx/html/*
