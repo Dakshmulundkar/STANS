@@ -13,9 +13,10 @@ COPY . .
 RUN npm run build
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-# nginx:1.30.3-alpine3.20 — stable nginx on Alpine 3.20 (supported, patched libxml2).
+# nginx:1.30.3-alpine3.23 — stable nginx on Alpine 3.23 (current, patched libxml2).
 # Replaces nginx:1.25-alpine3.18 which carried CVE-2024-56171 (libxml2) on EOL Alpine 3.18.
-FROM nginx:1.30.3-alpine3.20
+# Note: nginx stable Alpine tags ship on alpine3.23, not alpine3.20.
+FROM nginx:1.30.3-alpine3.23
 
 # OCI standard image labels — values injected by CI at build time
 ARG REVISION=unknown
