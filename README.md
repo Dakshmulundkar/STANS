@@ -20,7 +20,7 @@ traffic simulation, algorithm comparison, and interactive pathfinding.
 | Animation | Framer Motion | 12.x |
 | Charts | Recharts | 2.x |
 | Container | Docker multi-stage build | — |
-| Web Server | Nginx | 1.25-alpine3.18 |
+| Web Server | Nginx | 1.30.3-alpine3.23 |
 | CI/CD | GitHub Actions | — |
 | Registry | GitHub Container Registry | — |
 
@@ -201,18 +201,128 @@ chmod +x scripts/healthcheck.sh
 
 ## Phase 2 — Security Hardening (Person B)
 
-> Starts after Phase 1 is merged. Builds on the foundation laid in Phase 1.
+> Goal: add vulnerability scanning, CSP, read-only container hardening, supply chain security, and production security documentation on top of Phase 1's foundation.
 
-| Work Item | Status |
-|-----------|--------|
-| Trivy filesystem + image scanning (CI) | ⬜ Upcoming |
-| CodeQL static analysis (CI) | ⬜ Upcoming |
-| Content-Security-Policy header | ⬜ Upcoming |
-| Read-only container filesystem (compose) | ⬜ Upcoming |
-| `SECURITY.md` | ⬜ Upcoming |
-| `.gitignore` secrets hardening | ⬜ Upcoming |
-| `docs/security-hardening.md` (UFW, SSH, Certbot) | ⬜ Upcoming |
-| Action SHA pinning audit | ⬜ Upcoming |
+### Step 1 — Nginx base image upgrade + CVE patch
+
+**File:** `Dockerfile`
+
+Phase 1 used `nginx:1.25-alpine3.18`. Trivy image scanning flagged **CVE-2024-56171** (libxml2) in Alpine 3.18 which had reached EOL. The runtime stage was upgraded to:
+
+- `nginx:1.30.3-alpine3.23` — current Nginx stable on a fully patched Alpine 3.23 base.
+- `apk update && apk upgrade --no-cache` added before package installs to catch any CVEs not yet patched in the base image tag.
+- Pre-created `/var/cache/nginx`, `/var/run`, `/tmp` directories owned by `nginx` so tmpfs mounts work correctly with the read-only filesystem.
+
+### Step 2 — Read-only container filesystem
+
+**File:** `compose.yaml`
+
+The container now runs with a fully read-only filesystem. No process inside — including a compromised Nginx or injected code — can write anywhere except three explicitly whitelisted in-memory tmpfs mounts:
+
+```yaml
+read_only: true
+tmpfs:
+  - /var/cache/nginx:uid=101,gid=101   # Nginx proxy/fastcgi cache
+  - /var/run:uid=101,gid=101           # Nginx PID file
+  - /tmp:uid=101,gid=101               # Temporary file operations
+```
+
+Additional hardening added to `compose.yaml`:
+
+- **`cap_drop: ALL`** — all Linux capabilities dropped.
+- **`cap_add: NET_BIND_SERVICE`** — only capability added back, required to bind port 80.
+- **`no-new-privileges:true`** — prevents any process from gaining new privileges via setuid/setgid binaries.
+
+### Step 3 — Content-Security-Policy header
+
+**File:** `nginx.conf`
+
+Phase 1 deliberately deferred CSP. Person B audited the Vite build output locally with `docker compose up --build` and DevTools open, then added:
+
+```nginx
+add_header Content-Security-Policy "
+  default-src 'self';
+  script-src 'self';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob:;
+  font-src 'self';
+  connect-src 'self';
+  frame-ancestors 'none';
+  base-uri 'self';
+  form-action 'self';" always;
+```
+
+`unsafe-inline` is required for styles because Vite injects CSS via `<style>` tags at runtime (Tailwind base styles, CSS modules). Scripts are served as content-hashed files from the same origin — no `unsafe-inline` needed there. `frame-ancestors 'none'` replaces `X-Frame-Options` with the modern CSP equivalent.
+
+### Step 4 — Trivy vulnerability scanning
+
+**File:** `.github/workflows/security.yml`
+
+Two scan jobs run on every push, PR, and on a weekly Monday schedule:
+
+**Job 1 — `trivy-fs` (Filesystem scan)**
+- Scans the source code and `node_modules` for CRITICAL/HIGH CVEs.
+- Trivy binary downloaded directly from GitHub releases (pinned to v0.72.0) — avoids the supply chain risk of `curl | sh`.
+- Results uploaded as SARIF to the GitHub Security tab.
+- Fails the job on any CRITICAL CVE found.
+
+**Job 2 — `trivy-image` (Image scan)**
+- Builds the Docker image from the current commit then scans all image layers.
+- Same SARIF upload and CRITICAL failure threshold.
+- Catches CVEs introduced by the base image or Alpine packages.
+
+```
+Every push / PR / weekly
+        │
+        ▼
+  trivy-fs ──→ scan source + node_modules → SARIF → GitHub Security tab
+        │
+        ▼
+  trivy-image ──→ build image → scan layers → SARIF → GitHub Security tab
+```
+
+### Step 5 — CodeQL static analysis
+
+**File:** `.github/workflows/codeql.yml`
+
+GitHub's CodeQL engine runs JavaScript/TypeScript static analysis on every push and PR to `main` and weekly:
+
+- Uses the `security-extended` query suite — covers XSS, prototype pollution, insecure randomness, path traversal, and sensitive data exposure patterns.
+- Actions pinned to `github/codeql-action@ff0a06e83cb2...` (v3.28.19).
+- Results appear in the **Security → Code scanning** tab on GitHub.
+
+### Step 6 — `.gitignore` secrets hardening
+
+**File:** `.gitignore`
+
+Extended to block accidental commits of credentials and secret files:
+
+- `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.cert`, `*.crt`
+- Private key files: `id_rsa`, `id_ed25519`, `id_ecdsa`
+- Cloud credential patterns: `.aws/`, `service-account*.json`, `google-services.json`, `firebase*.json`
+- `secrets/`, `credentials/` directories
+
+### Step 7 — Security policy document
+
+**File:** `SECURITY.md`
+
+Created a complete security policy covering:
+- Supported versions (rolling release on `main`)
+- Private vulnerability reporting process via GitHub Security Advisories
+- Response timeline (48h acknowledgement → 7 days triage → 30 days patch)
+- Summary of all security controls implemented across both phases
+
+### Step 8 — Production security hardening guide
+
+**File:** `docs/security-hardening.md`
+
+Comprehensive documentation covering:
+- Read-only filesystem verification and tmpfs mount explanation
+- HTTP security header reference with rationale for each
+- Trivy and CodeQL usage — running locally, handling false positives, `.trivyignore`
+- GitHub Actions SHA pinning explanation and Dependabot maintenance
+- Secrets management and incident response (accidental commit procedure)
+- Pre-production deployment checklist
 
 ---
 
@@ -265,13 +375,17 @@ curl http://localhost:8080/health
 │   ├── dependabot.yml         # Automated dependency updates (Phase 1)
 │   └── workflows/
 │       ├── ci.yml             # Build validation — all branches/PRs (Phase 1)
-│       └── deploy.yml         # Build → GHCR → health check → rollback (Phase 1)
-├── compose.yaml               # Docker Compose for local testing (Phase 1)
-├── Dockerfile                 # Multi-stage: node:20-alpine3.20 → nginx:1.25-alpine3.18 (Phase 1)
+│       ├── deploy.yml         # Build → GHCR → health check → rollback (Phase 1)
+│       ├── security.yml       # Trivy filesystem + image scanning (Phase 2)
+│       └── codeql.yml         # CodeQL JS/TS static analysis (Phase 2)
+├── compose.yaml               # Docker Compose — read-only + capability hardening (Phase 2)
+├── Dockerfile                 # Multi-stage: node:20-alpine3.20 → nginx:1.30.3-alpine3.23 (Phase 2)
 ├── DEPLOYMENT.md              # Operational deployment guide (Phase 1)
+├── SECURITY.md                # Vulnerability reporting policy (Phase 2)
 ├── docs/
-│   └── blue-green.md          # Blue-green + canary patterns (Phase 1)
-├── nginx.conf                 # SPA routing, security headers, caching, rate limit stub (Phase 1)
+│   ├── blue-green.md          # Blue-green + canary patterns (Phase 1)
+│   └── security-hardening.md  # Security controls reference guide (Phase 2)
+├── nginx.conf                 # SPA routing, security headers, CSP, caching (Phase 2)
 ├── scripts/
 │   ├── run-local.sh           # Build + run container locally (Phase 1)
 │   └── healthcheck.sh         # Verify /health endpoint (Phase 1)
@@ -283,36 +397,47 @@ curl http://localhost:8080/health
 
 ---
 
-## Roadmap Checklist
+## What Was Built — Phase by Phase
 
-| Requirement | Phase | Status |
-|-------------|-------|--------|
-| Multi-stage Dockerfile | Phase 1 | ✅ node:20-alpine3.20 → nginx:1.25-alpine3.18 |
-| Pinned base image versions | Phase 1 | ✅ |
-| OCI image labels | Phase 1 | ✅ Injected by CI |
-| Non-root runtime user | Phase 1 | ✅ appuser:appgroup |
-| Docker HEALTHCHECK | Phase 1 | ✅ Polls /health |
-| `.dockerignore` | Phase 1 | ✅ |
-| Docker Compose | Phase 1 | ✅ compose.yaml |
-| Nginx static serving + SPA routing | Phase 1 | ✅ |
-| Nginx security headers | Phase 1 | ✅ server_tokens off, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy |
-| Nginx static asset caching | Phase 1 | ✅ 1y expires + immutable |
-| Nginx dotfile blocking | Phase 1 | ✅ |
-| Rate limiting stub | Phase 1 | ✅ limit_req_zone defined |
-| GitHub Actions CI (all branches) | Phase 1 | ✅ ci.yml |
-| GitHub Actions CD (main → GHCR) | Phase 1 | ✅ deploy.yml |
-| SHA-pinned GitHub Actions | Phase 1 | ✅ |
-| Multi-tag strategy (latest + sha) | Phase 1 | ✅ |
-| Post-deploy health check job | Phase 1 | ✅ |
-| Automated rollback on failure | Phase 1 | ✅ |
-| Dependabot (npm + Actions) | Phase 1 | ✅ |
-| Blue-green deployment | Phase 1 | 📄 docs/blue-green.md |
-| Canary releases | Phase 1 | 📄 docs/blue-green.md |
-| Security scanning (Trivy, CodeQL) | Phase 2 | ⬜ |
-| Content-Security-Policy header | Phase 2 | ⬜ |
-| Read-only container filesystem | Phase 2 | ⬜ |
+### Phase 1 — DevOps (Person A)
 
-✅ Implemented &nbsp;·&nbsp; 📄 Documented/guidance only &nbsp;·&nbsp; ⬜ Not yet implemented
+**Step 1 — Dockerfile:** Pinned base images (`node:20-alpine3.20` builder, `nginx:1.30.3-alpine3.23` runtime), added OCI labels injected by CI, non-root `appuser:appgroup`, layer caching optimization, and `HEALTHCHECK` polling `/health`.
+
+**Step 2 — .dockerignore:** Excluded `node_modules/`, `dist/`, `.git/`, `.github/`, logs, `.env`, and docs from the build context.
+
+**Step 3 — Docker Compose:** `compose.yaml` created with port 8080:80, health check mirroring the Dockerfile HEALTHCHECK, and `restart: unless-stopped`.
+
+**Step 4 — Nginx hardening:** `server_tokens off`, security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`), 1-year immutable cache for static assets, dotfile blocking, and `limit_req_zone` rate limiting stub.
+
+**Step 5 — CI workflow:** `ci.yml` runs on every push and PR — checkout, Node 20, `npm ci`, build, conditional lint and test.
+
+**Step 6 — CD pipeline + rollback:** `deploy.yml` split into three jobs — build/push to GHCR with SHA-pinned actions and multi-tag strategy, post-deploy health check, and automated rollback that re-tags the previous image as `:latest` if the health check fails.
+
+**Step 7 — Dependabot:** Weekly automated PRs for both npm dependencies and GitHub Actions.
+
+**Step 8 — Operational scripts:** `scripts/run-local.sh` and `scripts/healthcheck.sh` for local container build/run and endpoint verification.
+
+**Step 9 — Documentation:** `DEPLOYMENT.md` (operational guide), `docs/blue-green.md` (blue-green and canary patterns), upgraded `README.md`.
+
+---
+
+### Phase 2 — Security (Person B)
+
+**Step 1 — Base image CVE patch:** Upgraded runtime to `nginx:1.30.3-alpine3.23`, fixing CVE-2024-56171 (libxml2) in EOL Alpine 3.18. Added `apk upgrade` to catch unpatched CVEs in future builds.
+
+**Step 2 — Read-only container:** `compose.yaml` hardened with `read_only: true`, tmpfs mounts for `/var/cache/nginx`, `/var/run`, `/tmp`, `cap_drop: ALL` + `cap_add: NET_BIND_SERVICE`, and `no-new-privileges: true`.
+
+**Step 3 — Content-Security-Policy:** CSP header added to `nginx.conf` after auditing the Vite build output locally. `unsafe-inline` for styles only (Vite CSS injection). `frame-ancestors 'none'` replaces `X-Frame-Options`.
+
+**Step 4 — Trivy scanning:** `security.yml` runs filesystem and image scans on every push, PR, and weekly. Trivy pinned to v0.72.0, SARIF results uploaded to GitHub Security tab, fails on CRITICAL CVEs.
+
+**Step 5 — CodeQL analysis:** `codeql.yml` runs JavaScript/TypeScript static analysis with the `security-extended` query suite on every push/PR to `main` and weekly.
+
+**Step 6 — .gitignore hardening:** Extended to block `.env.*`, private keys, certificates, cloud credential files, and secrets directories.
+
+**Step 7 — Security policy:** `SECURITY.md` created with vulnerability reporting process, response timeline, and controls summary.
+
+**Step 8 — Security hardening guide:** `docs/security-hardening.md` covering container hardening, CSP rationale, Trivy/CodeQL usage, SHA pinning, secrets management, and a pre-production checklist.
 
 ---
 
@@ -327,15 +452,16 @@ Intentionally excluded — no false claims:
 | Prometheus / Grafana | Overkill for a static Nginx site |
 | SSL/TLS | Requires a real domain and server — documented in DEPLOYMENT.md |
 | EC2 / VPS deployment | No server provisioned — steps documented in DEPLOYMENT.md |
-| CSP without `unsafe-inline` | Vite builds need inline scripts — Phase 2 will audit and add |
-| Security scanning | Phase 2 work (Trivy + CodeQL) |
+| CSP without `unsafe-inline` for styles | Vite injects CSS at runtime — a nonce-based approach requires SSR |
 
 ---
 
 ## Documentation
 
 - [DEPLOYMENT.md](./DEPLOYMENT.md) — Docker, Compose, CI/CD, and rollback procedures
+- [SECURITY.md](./SECURITY.md) — Vulnerability reporting policy and security controls
 - [docs/blue-green.md](./docs/blue-green.md) — Blue-green and canary deployment patterns
+- [docs/security-hardening.md](./docs/security-hardening.md) — Security controls reference and production checklist
 
 ---
 

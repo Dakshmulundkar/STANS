@@ -412,18 +412,99 @@ secrets/
 
 ---
 
-## Phase 2 Deliverables Checklist
+## Phase 2 Deliverables
 
+### Step 1 — Trivy Vulnerability Scanning
+
+**Files:** `.github/workflows/security.yml`
+
+Two scan jobs added, triggered on every push, PR, and weekly Monday schedule:
+
+- **`trivy-fs`** — scans source code and `node_modules` for CRITICAL/HIGH CVEs. Trivy binary downloaded directly from GitHub releases pinned to v0.72.0 (no `curl | sh` supply chain risk). Results uploaded as SARIF to GitHub Security tab. Fails on any CRITICAL CVE.
+- **`trivy-image`** — builds the Docker image from the current commit, then scans all image layers with the same threshold. Catches CVEs introduced by Alpine packages or base image.
+
+### Step 2 — CodeQL Static Analysis
+
+**File:** `.github/workflows/codeql.yml`
+
+GitHub CodeQL engine runs JavaScript/TypeScript static analysis on every push/PR to `main` and weekly:
+
+- `security-extended` query suite — covers XSS, prototype pollution, path traversal, insecure randomness, and sensitive data exposure.
+- Actions pinned to `github/codeql-action@ff0a06e83cb2...` (v3.28.19).
+- Results appear in the **Security → Code scanning** tab on GitHub.
+
+### Step 3 — Content-Security-Policy Header
+
+**File:** `nginx.conf`
+
+Audited the Vite build output locally (`docker compose up --build` + DevTools Console) then added:
+
+```nginx
+add_header Content-Security-Policy "
+  default-src 'self';
+  script-src 'self';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob:;
+  font-src 'self';
+  connect-src 'self';
+  frame-ancestors 'none';
+  base-uri 'self';
+  form-action 'self';" always;
 ```
-[ ] .github/workflows/security.yml — Trivy FS + image scan, SARIF upload
-[ ] .github/workflows/codeql.yml — JS/TS static analysis
-[ ] nginx.conf — CSP header added (after testing)
-[ ] Dockerfile — read-only hardening, tmpfs mounts in compose
-[ ] SECURITY.md — created
-[ ] .gitignore — secrets hardened
-[ ] docs/security-hardening.md — UFW, SSH, Certbot, rollback
-[ ] Action SHAs pinned across all workflows
-```
+
+`unsafe-inline` required for styles only — Vite injects CSS via `<style>` tags at runtime. Scripts are content-hashed files served from `'self'` with no eval. `frame-ancestors 'none'` is the CSP-native replacement for `X-Frame-Options`.
+
+### Step 4 — Dockerfile Base Image CVE Patch
+
+**File:** `Dockerfile`
+
+Phase 1 used `nginx:1.25-alpine3.18`. Trivy image scan flagged **CVE-2024-56171** (libxml2) in EOL Alpine 3.18. Upgraded to:
+
+- `nginx:1.30.3-alpine3.23` — current Nginx stable on a fully patched Alpine 3.23 base.
+- `apk update && apk upgrade --no-cache` added before package installs to catch CVEs not yet patched in the base image tag.
+- Pre-created `/var/cache/nginx`, `/var/run`, `/tmp` directories owned by `nginx` so tmpfs mounts work correctly with the read-only filesystem.
+
+### Step 5 — Read-only Container + Capability Hardening
+
+**File:** `compose.yaml`
+
+Three security controls added on top of Phase 1's compose.yaml:
+
+- **`read_only: true`** — container runs with a fully read-only root filesystem.
+- **tmpfs mounts** — only three paths are writable (in-memory, never persisted):
+  - `/var/cache/nginx` — Nginx proxy cache
+  - `/var/run` — Nginx PID file
+  - `/tmp` — temporary file operations
+- **`cap_drop: ALL` + `cap_add: NET_BIND_SERVICE`** — all Linux capabilities dropped; only what's needed to bind port 80 is restored.
+- **`no-new-privileges: true`** — prevents privilege escalation via setuid/setgid binaries.
+
+### Step 6 — `.gitignore` Secrets Hardening
+
+**File:** `.gitignore`
+
+Extended to block accidental commits of credentials and secret files: `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.cert`, private key files (`id_rsa`, `id_ed25519`), cloud credential patterns (`.aws/`, `service-account*.json`, `google-services.json`), and secrets directories.
+
+### Step 7 — Security Policy Document
+
+**File:** `SECURITY.md`
+
+Created complete security policy covering:
+- Supported versions (rolling release on `main`)
+- Private vulnerability reporting via GitHub Security Advisories
+- Response timeline (48h acknowledgement → 7 days triage → 30 days patch)
+- Summary of all security controls implemented across both phases
+
+### Step 8 — Production Security Hardening Guide
+
+**File:** `docs/security-hardening.md`
+
+Comprehensive reference document covering:
+- Read-only filesystem verification and tmpfs mount explanation
+- HTTP security header reference with rationale for each directive
+- Trivy and CodeQL: running locally, handling false positives, `.trivyignore`
+- GitHub Actions SHA pinning rationale and Dependabot maintenance
+- Secrets management and incident response (accidental commit procedure)
+- Pre-production deployment checklist
 
 ---
 
@@ -459,8 +540,8 @@ main
 | GHCR publishing | ✅ Multi-tag | ✅ Scanned |
 | Health check | ✅ /health + HEALTHCHECK | ✅ |
 | Security scanning | ⬜ | ✅ Trivy + CodeQL |
-| Supply chain hygiene | ✅ Dependabot | ✅ SHA-pinned |
-| Production guidance | ✅ DEPLOYMENT.md | ✅ security-hardening.md |
+| Supply chain hygiene | ✅ Dependabot | ✅ SHA-pinned (codeql/security workflows) |
+| Production guidance | ✅ DEPLOYMENT.md | ✅ docs/security-hardening.md |
 | Blue-Green deployment | 📄 Documented | 📄 Documented |
 | Canary releases | 📄 Documented | 📄 Documented |
 | Automated rollback | ✅ CI job | ✅ |
