@@ -1,0 +1,145 @@
+name: Security Scanning — Trivy
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "**"
+  schedule:
+    # Run every Monday at 08:00 UTC to catch newly disclosed CVEs
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+  security-events: write  # Required to upload SARIF results to GitHub Security tab
+
+env:
+  # Pinned to v0.72.0 — latest stable release as of 2026-06-30.
+  # Verified to exist at: https://github.com/aquasecurity/trivy/releases/tag/v0.72.0
+  # Update this value by checking https://github.com/aquasecurity/trivy/releases/latest
+  TRIVY_VERSION: "0.72.0"
+
+jobs:
+  # ── Job 1: Scan the filesystem (source + dependencies) ──────────────────────
+  trivy-fs:
+    name: Trivy Filesystem Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        # SHA-pinned: actions/checkout@v4 (tag: v4.2.2)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Trivy binary directly
+        # Direct archive download — no helper script fetched from an unpinned branch.
+        # Eliminates the supply chain risk of curl|sh from main and makes 404s explicit.
+        # GitHub ubuntu-latest runners own /usr/local/bin; no sudo needed.
+        run: |
+          set -eo pipefail
+          echo "Downloading Trivy v${TRIVY_VERSION}..."
+          curl -fsSL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o /tmp/trivy.tar.gz
+          [ -s /tmp/trivy.tar.gz ] || { echo "ERROR: Archive empty — verify TRIVY_VERSION exists on releases page"; exit 1; }
+          tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy
+          chmod +x /usr/local/bin/trivy
+          ls -l /usr/local/bin/trivy
+          /usr/local/bin/trivy --version
+          echo "/usr/local/bin" >> $GITHUB_PATH
+
+      - name: Run Trivy filesystem scan
+        run: |
+          set -eo pipefail
+          /usr/local/bin/trivy fs \
+            --format sarif \
+            --output trivy-fs-results.sarif \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            .
+        # continue-on-error: true so the SARIF upload always runs even when
+        # vulnerabilities are found (exit-code 1). Job is failed explicitly below.
+        continue-on-error: true
+
+      - name: Upload Trivy filesystem SARIF to GitHub Security tab
+        # SHA-pinned: github/codeql-action/upload-sarif@v3 (tag: v3.28.19)
+        uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f
+        if: always() && hashFiles('trivy-fs-results.sarif') != ''
+        with:
+          sarif_file: "trivy-fs-results.sarif"
+          category: "trivy-fs"
+
+      - name: Fail job if CRITICAL vulnerabilities were found
+        # Full path used — does not rely on PATH being set from GITHUB_PATH.
+        if: always()
+        run: |
+          set -eo pipefail
+          /usr/local/bin/trivy fs \
+            --format table \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            .
+
+  # ── Job 2: Build image then scan it ─────────────────────────────────────────
+  trivy-image:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        # SHA-pinned: actions/checkout@v4 (tag: v4.2.2)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Trivy binary directly
+        # Direct archive download — no helper script fetched from an unpinned branch.
+        # Eliminates the supply chain risk of curl|sh from main and makes 404s explicit.
+        # GitHub ubuntu-latest runners own /usr/local/bin; no sudo needed.
+        run: |
+          set -eo pipefail
+          echo "Downloading Trivy v${TRIVY_VERSION}..."
+          curl -fsSL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o /tmp/trivy.tar.gz
+          [ -s /tmp/trivy.tar.gz ] || { echo "ERROR: Archive empty — verify TRIVY_VERSION exists on releases page"; exit 1; }
+          tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy
+          chmod +x /usr/local/bin/trivy
+          ls -l /usr/local/bin/trivy
+          /usr/local/bin/trivy --version
+          echo "/usr/local/bin" >> $GITHUB_PATH
+
+      - name: Build Docker image for scanning
+        run: docker build -t stans-scan:${{ github.sha }} .
+
+      - name: Run Trivy image scan
+        run: |
+          set -eo pipefail
+          /usr/local/bin/trivy image \
+            --format sarif \
+            --output trivy-image-results.sarif \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "stans-scan:${{ github.sha }}"
+        continue-on-error: true
+
+      - name: Upload Trivy image SARIF to GitHub Security tab
+        # SHA-pinned: github/codeql-action/upload-sarif@v3 (tag: v3.28.19)
+        uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f
+        if: always() && hashFiles('trivy-image-results.sarif') != ''
+        with:
+          sarif_file: "trivy-image-results.sarif"
+          category: "trivy-image"
+
+      - name: Fail job if CRITICAL vulnerabilities were found
+        if: always()
+        run: |
+          set -eo pipefail
+          /usr/local/bin/trivy image \
+            --format table \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "stans-scan:${{ github.sha }}"

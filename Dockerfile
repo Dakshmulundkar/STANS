@@ -13,7 +13,10 @@ COPY . .
 RUN npm run build
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM nginx:1.25-alpine3.18
+# nginx:1.30.3-alpine3.23 — stable nginx on Alpine 3.23 (current, patched libxml2).
+# Replaces nginx:1.25-alpine3.18 which carried CVE-2024-56171 (libxml2) on EOL Alpine 3.18.
+# Note: nginx stable Alpine tags ship on alpine3.23, not alpine3.20.
+FROM nginx:1.30.3-alpine3.23
 
 # OCI standard image labels — values injected by CI at build time
 ARG REVISION=unknown
@@ -33,8 +36,9 @@ LABEL org.opencontainers.image.title="STANS Navigation System" \
 # auditability and future use with rootless configurations.
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-# Install wget for the HEALTHCHECK (available in alpine, lightweight)
-RUN apk add --no-cache wget
+# Upgrade all packages first to catch any CVEs not yet patched in the base image tag,
+# then install wget for the HEALTHCHECK.
+RUN apk update && apk upgrade --no-cache && apk add --no-cache wget
 
 # Remove default Nginx content and install our built app
 RUN rm -rf /usr/share/nginx/html/*
@@ -44,6 +48,12 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Ensure the app files are readable by the nginx user
 RUN chown -R nginx:nginx /usr/share/nginx/html && \
     chmod -R 755 /usr/share/nginx/html
+
+# Nginx needs to write to these paths at runtime.
+# All other parts of the filesystem will be mounted read-only (see compose.yaml).
+# We pre-create these directories so tmpfs mounts work correctly.
+RUN mkdir -p /var/cache/nginx /var/run /tmp && \
+    chown -R nginx:nginx /var/cache/nginx /var/run /tmp
 
 EXPOSE 80
 
